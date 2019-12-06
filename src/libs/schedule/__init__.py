@@ -1,42 +1,3 @@
-"""
-Python job scheduling for humans.
-
-github.com/dbader/schedule
-
-An in-process scheduler for periodic jobs that uses the builder pattern
-for configuration. Schedule lets you run Python functions (or any other
-callable) periodically at pre-determined intervals using a simple,
-human-friendly syntax.
-
-Inspired by Addam Wiggins' article "Rethinking Cron" [1] and the
-"clockwork" Ruby module [2][3].
-
-Features:
-    - A simple to use API for scheduling jobs.
-    - Very lightweight and no external dependencies.
-    - Excellent test coverage.
-    - Tested on Python 2.7, 3.5 and 3.6
-
-Usage:
-    >>> import schedule
-    >>> import time
-
-    >>> def job(message='stuff'):
-    >>>     print("I'm working on:", message)
-
-    >>> schedule.every(10).minutes.do(job)
-    >>> schedule.every(5).to(10).days.do(job)
-    >>> schedule.every().hour.do(job, message='things')
-    >>> schedule.every().day.at("10:30").do(job)
-
-    >>> while True:
-    >>>     schedule.run_pending()
-    >>>     time.sleep(1)
-
-[1] https://adam.herokuapp.com/past/2010/4/13/rethinking_cron/
-[2] https://github.com/Rykian/clockwork
-[3] https://adam.herokuapp.com/past/2010/6/30/replace_cron_with_clockwork/
-"""
 try:
     from collections.abc import Hashable
 except ImportError:
@@ -47,6 +8,7 @@ import logging
 import random
 import re
 import time
+import threading
 
 logger = logging.getLogger('schedule')
 
@@ -79,6 +41,7 @@ class Scheduler(object):
     factories to create jobs, keep record of scheduled jobs and
     handle their execution.
     """
+
     def __init__(self):
         self.jobs = []
 
@@ -95,6 +58,32 @@ class Scheduler(object):
         runnable_jobs = (job for job in self.jobs if job.should_run)
         for job in sorted(runnable_jobs):
             self._run_job(job)
+
+    def run_continuously(self, interval=1):
+        """Continuously run, while executing pending jobs at each elapsed
+        time interval.
+
+        @return cease_continuous_run: threading.Event which can be set to
+        cease continuous run.
+
+        Please note that it is *intended behavior that run_continuously()
+        does not run missed jobs*. For example, if you've registered a job
+        that should run every minute and you set a continuous run interval
+        of one hour then your job won't be run 60 times at each interval but
+        only once.
+        """
+        cease_continuous_run = threading.Event()
+
+        class ScheduleThread(threading.Thread):
+            @classmethod
+            def run(cls):
+                while not cease_continuous_run.is_set():
+                    self.run_pending()
+                    time.sleep(interval)
+
+        continuous_thread = ScheduleThread()
+        continuous_thread.start()
+        return cease_continuous_run
 
     def run_all(self, delay_seconds=0):
         """
@@ -188,6 +177,7 @@ class Job(object):
     A job is usually created and returned by :meth:`Scheduler.every`
     method, which also defines its `interval`.
     """
+
     def __init__(self, interval, scheduler=None):
         self.interval = interval  # pause interval * unit between runs
         self.latest = None  # upper limit to the interval
@@ -229,7 +219,7 @@ class Job(object):
             return not isinstance(j, Job)
 
         timestats = '(last run: %s, next run: %s)' % (
-                    format_time(self.last_run), format_time(self.next_run))
+            format_time(self.last_run), format_time(self.next_run))
 
         if hasattr(self.job_func, '__name__'):
             job_func_name = self.job_func.__name__
@@ -242,14 +232,14 @@ class Job(object):
 
         if self.at_time is not None:
             return 'Every %s %s at %s do %s %s' % (
-                   self.interval,
-                   self.unit[:-1] if self.interval == 1 else self.unit,
-                   self.at_time, call_repr, timestats)
+                self.interval,
+                self.unit[:-1] if self.interval == 1 else self.unit,
+                self.at_time, call_repr, timestats)
         else:
             fmt = (
-                'Every %(interval)s ' +
-                ('to %(latest)s ' if self.latest is not None else '') +
-                '%(unit)s do %(call_repr)s %(timestats)s'
+                    'Every %(interval)s ' +
+                    ('to %(latest)s ' if self.latest is not None else '') +
+                    '%(unit)s do %(call_repr)s %(timestats)s'
             )
 
             return fmt % dict(
@@ -573,6 +563,12 @@ def every(interval=1):
     :data:`default scheduler instance <default_scheduler>`.
     """
     return default_scheduler.every(interval)
+
+def run_continuously(interval=1):
+     """Calls :meth:`run_pending <Scheduler.run_pending>` on the
+    :data:`default scheduler instance <default_scheduler>`.
+    """
+     default_scheduler.run_continuously(interval)
 
 
 def run_pending():
